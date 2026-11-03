@@ -495,6 +495,7 @@ function createEdgeServer({
         app, httpServer, wss, runner, telegram, riskGovernor, paperEngine, liveManager, auditLog,
         handleTelegramUpdate, onOptionQuote, boot, stepTime, flushPersistence,
         killEverything, armLiveWithChecks, completeLogin,
+        getUpstoxAccessToken: () => getAccessToken(),   // for the market-data feed (same daily login)
         _getBrokerSession: () => ({ ...brokerSession, token: brokerSession.token ? '[set]' : null }),
         _oauthStateCount: () => oauthStates.size
     };

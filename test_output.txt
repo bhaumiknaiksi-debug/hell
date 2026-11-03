@@ -46,10 +46,16 @@ PASS  Stage 5: shutdown with an open position -> state saved, stop left resting,
 PASS  Stage 5: runner - KV save/load round-trip, option-quote forwarding, instrument-key resolution, data gaps
 PASS  Stage 5: daily instrument map - weekly and monthly NIFTY symbols resolve to Upstox keys; wrong lot size refuses
 PASS  Stage 5: startup refuses a bad config with a clear message
+PASS  Upstox feed: waits for today's login, then connects with the Bearer token and subscribes the NIFTY index (full mode)
+PASS  Upstox feed: index price -> spot tick; subscribes nearest-expiry ATM ±10 strikes; option depth -> option tick with bid/ask
+PASS  Upstox feed: spot moving 100+ points widens the window and never drops a subscribed contract
+PASS  Upstox feed: dropped connection reconnects and resubscribes everything; a silent socket in market hours is dropped
+PASS  Upstox feed: a corrupt frame is counted and ignored, the feed keeps running
+PASS  Upstox feed end-to-end: feed -> runner -> server: source goes live, option quotes reach the paper position, keys auto-register
 PASS  Upstox client: place order = POST api-hft v3 with Bearer + X-Algo-Name and correct body
 PASS  Upstox client: refuses MARKET orders and missing algo name before any HTTP call
 PASS  Upstox client: 401 fires the auth hook; error bodies surface the Upstox code
 PASS  Upstox client: order status/fill normalisation, positions and funds parsing
 PASS  Upstox token exchange is form-encoded with authorization_code grant
 
-49/49 passed
+55/55 passed

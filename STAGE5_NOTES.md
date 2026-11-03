@@ -1,6 +1,6 @@
 # HELL Stage 5 — rebuild notes (3 Nov 2026)
 
-`npm test` → **49/49 pass** (38 Stage 4 + 11 Stage 5). The broker in tests is a **simulator**: passing proves HELL's logic, not Upstox's real behaviour.
+`npm test` → **55/55 pass** (38 Stage 4 + 11 Stage 5 + 6 market-feed). The broker in tests is a **simulator**: passing proves HELL's logic, not Upstox's real behaviour.
 
 ## Where each file came from
 | File | Source |
@@ -25,7 +25,7 @@ Not used: all 16 files Gemini regenerated on 3 Nov. They used MARKET exits, a lo
 
 ## What HELL still cannot do (so it won't trade yet)
 1. **No strategy.** The 5-minute breakout logic from the Gemini "Pieces 1–4" chats isn't here. `engine.js` produces no signals until the real strategy is added (its interface is documented at the top of the file).
-2. **No live market-data feed.** `runner.js` accepts feeds but none connects to Upstox/Fyers yet. With no feed, the source is `UNKNOWN` and the governor blocks every entry. Paper sessions also can't count toward graduation.
+2. ~~No live market-data feed~~ **Added 4 Nov:** `upstox_feed.js` (see "Live market data" below). It has only been tested against a local fake of Upstox's feed, not the real one.
 3. Static-IP host (not Render free tier), HTTPS for the Upstox redirect, and the Telegram webhook still need setting up.
 
 ## Not verified against real Upstox (check on the supervised 1-lot test)
@@ -36,3 +36,13 @@ Not used: all 16 files Gemini regenerated on 3 Nov. They used MARKET exits, a lo
 
 ## Deploy check (done here)
 I booted `index.js` against a real PostgreSQL 16. It created its tables, `/health` returned 200, and SIGTERM saved state and exited with code 0. A missing config makes it exit 1 with the list of problems.
+
+## Live market data (`upstox_feed.js`, added 4 Nov 2026)
+- Uses Upstox Market Data Feed V3 over a WebSocket with protobuf messages. The schema is vendored in `proto/` from Upstox's own Node SDK (MIT licence).
+- Connects automatically once `/login` has produced today's Upstox token. There is nothing extra to configure.
+- Subscribes to the NIFTY 50 index. On the first price, it also subscribes the **nearest-expiry** NIFTY options within ±10 strikes (42 contracts, CE and PE). If spot moves 100 points it widens the window. It never unsubscribes during the day, so an open position always keeps its quotes.
+- An option quote is passed on only with a real best bid **and** ask, taken from the depth. That is what the paper stops and live exits are priced from.
+- If the socket drops, it reconnects with backoff (1 s, 2 s, 5 s, 10 s, 30 s) and resubscribes everything. A socket that goes silent for 30 s in market hours is dropped and reconnected. While there's no data, the runner opens a data gap: entries are blocked and that day doesn't count toward graduation.
+- Contract IDs come from the daily instrument master, so the feed and the order layer use the same keys.
+
+**Check on the first market morning (log lines `HELL feed:`):** "connected (1 instruments)", then index prices flowing, then about 43 subscriptions, then `/health` showing `activeSource: "UPSTOX"`. If the connect fails with HTTP 401/403, the token or app permissions are the problem. Exact endpoint behaviour, the auth header and the message format are from the SDK and have not been tried against the real feed (this sandbox can't reach api.upstox.com).

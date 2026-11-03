@@ -8,6 +8,7 @@ const zlib = require('zlib');
 const serverMod = require('./server.js');
 const runnerMod = require('./runner.js');
 const paperMod = require('./paper_engine.js');
+const feedMod = require('./upstox_feed.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HEARTBEAT_INTERVAL_MS = 2000;
@@ -63,18 +64,21 @@ function buildNiftyKeyMap(list, expectedLotSize = paperMod.LOT_SIZE) {
         if (!lastExpiryInMonth[k] || p.d > lastExpiryInMonth[k]) lastExpiryInMonth[k] = p.d;
     }
     const map = Object.create(null);
+    const contracts = [];
     const lotSizes = new Set();
     for (const i of opts) {
         const p = istDateParts(i.expiry);
         const monthly = lastExpiryInMonth[`${p.y}-${p.m}`] === p.d;
-        map[hellSymbol(p, Number(i.strike_price), i.instrument_type, monthly)] = String(i.instrument_key);
+        const symbol = hellSymbol(p, Number(i.strike_price), i.instrument_type, monthly);
+        map[symbol] = String(i.instrument_key);
+        contracts.push({ symbol, instrumentKey: String(i.instrument_key), strike: Number(i.strike_price), type: i.instrument_type, expiryMs: Number(i.expiry) });
         if (i.trading_symbol) map[String(i.trading_symbol).trim()] = String(i.instrument_key);
         if (i.lot_size) lotSizes.add(Number(i.lot_size));
     }
     if (opts.length && (lotSizes.size !== 1 || !lotSizes.has(expectedLotSize))) {
         throw new Error(`NIFTY lot size in Upstox master is ${[...lotSizes].join('/')} but HELL is built for ${expectedLotSize}. Refusing to trade.`);
     }
-    return { map, count: opts.length };
+    return { map, contracts, count: opts.length };
 }
 
 async function fetchUpstoxInstrumentMaster(fetchFn = globalThis.fetch, url = process.env.UPSTOX_INSTRUMENT_MASTER_URL || INSTRUMENT_MASTER_URL) {
@@ -88,9 +92,9 @@ async function fetchUpstoxInstrumentMaster(fetchFn = globalThis.fetch, url = pro
     } else {
         data = await res.json();
     }
-    const { map, count } = buildNiftyKeyMap(Array.isArray(data) ? data : (data && data.data) || []);
+    const { map, contracts, count } = buildNiftyKeyMap(Array.isArray(data) ? data : (data && data.data) || []);
     if (count === 0) throw new Error('Upstox instrument master contained no NIFTY options');
-    return map;
+    return { map, contracts };
 }
 
 // ----------------------------------------------------------- shutdown
@@ -153,25 +157,35 @@ async function main() {
     // Instrument keys. If this fails HELL still boots (Telegram, /status, paper),
     // but every live entry is refused: it never guesses a key.
     let keyMap = Object.create(null);
+    let contracts = [];
     let masterError = null;
     let masterDateKey = null;
     async function loadMaster() {
         try {
-            keyMap = await fetchUpstoxInstrumentMaster();
+            ({ map: keyMap, contracts } = await fetchUpstoxInstrumentMaster());
             masterError = null;
             masterDateKey = paperMod.getIstDateKeyAndMinutes(Date.now()).dateKey;
             console.log(`HELL: ${Object.keys(keyMap).length} NIFTY instrument keys loaded`);
         } catch (err) {
             masterError = err.message;
             keyMap = Object.create(null);
+            contracts = [];
             console.error(`HELL: instrument master failed: ${err.message}`);
         }
     }
     await loadMaster();
 
+    // Live NIFTY prices from Upstox. Connects once /login has produced today's token.
+    const upstoxFeed = feedMod.createUpstoxMarketFeed({
+        getAccessToken: () => (edgeServer ? edgeServer.getUpstoxAccessToken() : null),
+        getContracts: () => contracts,
+        onStatus: (text) => console.log(`HELL feed: ${text}`)
+    });
+
     edgeServer = serverMod.createEdgeServer({
         env,
         storageAdapter,
+        feeds: [upstoxFeed],
         runnerFactory: (opts) => runnerMod.createRunner({
             ...opts,
             config: {

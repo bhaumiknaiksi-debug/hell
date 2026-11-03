@@ -4,8 +4,8 @@ NIFTY options paper/live trading system with a risk governor, built for Upstox.
 
 ```
 npm install
-npm test     # 49 tests, broker is a simulator
+npm test     # 55 tests, broker and Upstox feed are simulated
 npm start    # needs the variables in .env.example
 ```
 
-**Status:** HELL boots, reconciles, and handles Telegram commands, but it **cannot trade yet**. There is no strategy (`engine.js` emits no signals) and no live market-data feed. See `STAGE5_NOTES.md`.
+**Status:** HELL boots, reconciles, and handles Telegram commands, but it **cannot trade yet**. Live NIFTY prices come from Upstox (`upstox_feed.js`), but there is no strategy yet (`engine.js` emits no signals). See `STAGE5_NOTES.md`.

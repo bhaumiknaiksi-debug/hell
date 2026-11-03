@@ -777,6 +777,164 @@ test('Stage 5: startup refuses a bad config with a clear message', () => {
     assert.ok(problems.some(p => /WS_SECRET/.test(p)) && problems.some(p => /https/.test(p)) && problems.some(p => /trigger < limit floor/.test(p)));
 });
 
+
+// =============================================================== UPSTOX MARKET FEED (local fake Upstox WebSocket)
+const feedMod = require('./upstox_feed.js');
+const { WebSocketServer } = require('ws');
+
+async function waitFor(cond, ms = 3000, label = 'condition') {
+    const end = Date.now() + ms;
+    while (!cond()) { if (Date.now() > end) throw new Error(`timed out waiting for ${label}`); await new Promise(r => setTimeout(r, 10)); }
+}
+
+// Fake Upstox feed server: records auth headers and subscribe messages, lets the test push protobuf frames.
+async function fakeUpstoxFeedServer() {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise(r => wss.on('listening', r));
+    const f = { wss, url: `ws://127.0.0.1:${wss.address().port}`, conns: [], auths: [], subs: [] };
+    wss.on('connection', (sock, req) => {
+        f.conns.push(sock); f.auths.push(req.headers.authorization);
+        sock.on('message', (m) => f.subs.push(JSON.parse(String(m))));
+    });
+    f.push = (obj) => f.conns[f.conns.length - 1].send(feedMod.encodeFeedResponse(obj));
+    f.subscribedKeys = () => new Set(f.subs.flatMap(x => x.data.instrumentKeys));
+    f.close = () => new Promise(r => { for (const c of wss.clients) c.terminate(); wss.close(r); });
+    return f;
+}
+
+const IST_MS = (y, m, d, hh, mm) => Date.UTC(y, m, d, hh, mm) - IST;
+function feedContracts() {
+    const out = [];
+    for (const [expiryMs, tag] of [[IST_MS(2026, 10, 3, 15, 30), 'N03'], [IST_MS(2026, 10, 10, 15, 30), 'N10']]) {
+        for (let k = 24000; k <= 26000; k += 50) for (const type of ['CE', 'PE']) {
+            out.push({ symbol: `NIFTY26${tag}${k}${type}`, instrumentKey: `NSE_FO|${tag}${k}${type}`, strike: k, type, expiryMs });
+        }
+    }
+    return out;
+}
+const idxFrame = (ltp, ltt) => ({ type: 'live_feed', feeds: { [feedMod.NIFTY_INDEX_KEY]: { fullFeed: { indexFF: { ltpc: { ltp, ltt } } } } } });
+const optFrame = (key, ltp, bid, ask, ltt) => ({ type: 'live_feed', feeds: { [key]: { fullFeed: { marketFF: { ltpc: { ltp, ltt }, marketLevel: { bidAskQuote: bid ? [{ bidP: bid, bidQ: 650, askP: ask, askQ: 650 }] : [] } } } } } });
+
+test('Upstox feed: waits for today\'s login, then connects with the Bearer token and subscribes the NIFTY index (full mode)', async () => {
+    const fake = await fakeUpstoxFeedServer();
+    const clock = createClock(at(10, 0));
+    let token = null;
+    const feed = feedMod.createUpstoxMarketFeed({ url: fake.url, getAccessToken: () => token, getContracts: feedContracts, getTime: clock.getTime, watchMs: 1e9 });
+    try {
+        await feed.start();
+        await new Promise(r => setTimeout(r, 100));
+        assert.strictEqual(fake.conns.length, 0, 'no connection before /login');
+        token = 'TOK-1'; feed._watch();
+        await waitFor(() => fake.subs.length >= 1, 3000, 'subscribe');
+        assert.strictEqual(fake.auths[0], 'Bearer TOK-1');
+        assert.deepStrictEqual([fake.subs[0].method, fake.subs[0].data.mode, fake.subs[0].data.instrumentKeys], ['sub', 'full', ['NSE_INDEX|Nifty 50']]);
+    } finally { await feed.stop(); await fake.close(); }
+});
+
+test('Upstox feed: index price -> spot tick; subscribes nearest-expiry ATM ±10 strikes; option depth -> option tick with bid/ask', async () => {
+    const fake = await fakeUpstoxFeedServer();
+    const clock = createClock(at(10, 0));
+    const ticks = [];
+    const feed = feedMod.createUpstoxMarketFeed({ url: fake.url, getAccessToken: () => 'T', getContracts: feedContracts, getTime: clock.getTime, watchMs: 1e9 });
+    feed.onTick(async (t) => ticks.push(t));
+    try {
+        await feed.start();
+        await waitFor(() => fake.subs.length >= 1);
+        fake.push(idxFrame(25012.4, clock.now));
+        await waitFor(() => ticks.length >= 1 && fake.subscribedKeys().size > 1);
+        assert.deepStrictEqual([ticks[0].kind, ticks[0].ltp, ticks[0].src], ['spot', 25012.4, 'UPSTOX']);
+        const keys = [...fake.subscribedKeys()].filter(k => k.startsWith('NSE_FO'));
+        assert.strictEqual(keys.length, 42);
+        assert.ok(keys.every(k => k.includes('N03')), 'only the nearest expiry');
+        assert.ok(keys.includes('NSE_FO|N0325000CE') && keys.includes('NSE_FO|N0324500PE') && keys.includes('NSE_FO|N0325500CE') && !keys.includes('NSE_FO|N0325550CE'));
+        fake.push(optFrame('NSE_FO|N0325000CE', 101.5, 101.4, 101.6, clock.now));
+        fake.push(optFrame('NSE_FO|N0325050CE', 80, null, null, clock.now));          // no depth: dropped
+        fake.push(optFrame('NSE_FO|SOMETHINGELSE', 5, 4.9, 5.1, clock.now));            // not ours: dropped
+        await waitFor(() => ticks.some(t => t.kind === 'option'));
+        await new Promise(r => setTimeout(r, 50));
+        const opt = ticks.filter(t => t.kind === 'option');
+        assert.strictEqual(opt.length, 1);
+        assert.deepStrictEqual([opt[0].sym, opt[0].instrumentKey, opt[0].b, opt[0].a, opt[0].ltp], ['NIFTY26N0325000CE', 'NSE_FO|N0325000CE', 101.4, 101.6, 101.5]);
+        assert.ok(paperMod.NIFTY_OPT_SYMBOL_REGEX.test(opt[0].sym));
+    } finally { await feed.stop(); await fake.close(); }
+});
+
+test('Upstox feed: spot moving 100+ points widens the window and never drops a subscribed contract', async () => {
+    const fake = await fakeUpstoxFeedServer();
+    const clock = createClock(at(10, 0));
+    const feed = feedMod.createUpstoxMarketFeed({ url: fake.url, getAccessToken: () => 'T', getContracts: feedContracts, getTime: clock.getTime, watchMs: 1e9 });
+    try {
+        await feed.start();
+        await waitFor(() => fake.subs.length >= 1);
+        fake.push(idxFrame(25000, clock.now));
+        await waitFor(() => fake.subscribedKeys().size === 43);
+        fake.push(idxFrame(25160, clock.now));
+        await waitFor(() => fake.subscribedKeys().has('NSE_FO|N0325650CE'), 3000, 'widened window');
+        assert.ok(fake.subscribedKeys().has('NSE_FO|N0324500PE'));
+        assert.ok(!fake.subs.some(x => x.method !== 'sub'), 'no unsubscribe');
+    } finally { await feed.stop(); await fake.close(); }
+});
+
+test('Upstox feed: dropped connection reconnects and resubscribes everything; a silent socket in market hours is dropped', async () => {
+    const fake = await fakeUpstoxFeedServer();
+    const clock = createClock(at(10, 0));
+    const feed = feedMod.createUpstoxMarketFeed({ url: fake.url, getAccessToken: () => 'T', getContracts: feedContracts, getTime: clock.getTime, watchMs: 1e9 });
+    try {
+        await feed.start();
+        await waitFor(() => fake.subs.length >= 1);
+        fake.push(idxFrame(25000, clock.now));
+        await waitFor(() => fake.subscribedKeys().size === 43);
+        fake.conns[0].terminate();                               // Upstox drops us
+        await waitFor(() => !feed.isConnected());
+        clock.now += 2000; feed._watch();                         // after backoff
+        await waitFor(() => fake.conns.length === 2 && fake.subs.filter(x => x.data.instrumentKeys.length).length >= 2);
+        const second = fake.subs.slice(1).flatMap(x => x.data.instrumentKeys);
+        assert.strictEqual(new Set(second).size, 43, 'all 43 resubscribed on the new connection');
+        clock.now += 31000; feed._watch();                        // connected but silent for 31 s at 10:00 IST
+        await waitFor(() => !feed.isConnected(), 3000, 'stale socket dropped');
+        assert.match(feed.getStats().lastError, /no data/);
+    } finally { await feed.stop(); await fake.close(); }
+});
+
+test('Upstox feed: a corrupt frame is counted and ignored, the feed keeps running', async () => {
+    const fake = await fakeUpstoxFeedServer();
+    const clock = createClock(at(10, 0));
+    const ticks = [];
+    const feed = feedMod.createUpstoxMarketFeed({ url: fake.url, getAccessToken: () => 'T', getContracts: feedContracts, getTime: clock.getTime, watchMs: 1e9 });
+    feed.onTick(async (t) => ticks.push(t));
+    try {
+        await feed.start();
+        await waitFor(() => fake.subs.length >= 1);
+        fake.conns[0].send(Buffer.from([0xff, 0xff, 0xff, 0x01]));
+        fake.push(idxFrame(25000, clock.now));
+        await waitFor(() => ticks.length === 1);
+        assert.strictEqual(feed.getStats().decodeErrors, 1);
+        assert.ok(feed.isConnected());
+    } finally { await feed.stop(); await fake.close(); }
+});
+
+test('Upstox feed end-to-end: feed -> runner -> server: source goes live, option quotes reach the paper position, keys auto-register', async () => {
+    const fake = await fakeUpstoxFeedServer();
+    const clock = createClock(at(10, 0));
+    const feed = feedMod.createUpstoxMarketFeed({ url: fake.url, getAccessToken: () => 'T', getContracts: feedContracts, getTime: clock.getTime, watchMs: 1e9 });
+    const runner = { factory: (opts) => runnerMod.createRunner({ ...opts, feeds: [feed] }) };
+    const { srv } = makeServer({ clock, env: TIGHT, runner });
+    try {
+        await srv.boot();
+        await waitFor(() => fake.subs.length >= 1);
+        assert.strictEqual(srv.runner.getFailoverManager().getSource(), 'UNKNOWN');
+        fake.push(idxFrame(25010, clock.now));
+        await waitFor(() => srv.runner.getFailoverManager().getSource() === 'UPSTOX');
+        await srv.riskGovernor.armMode('PAPER');
+        const r = await srv.paperEngine.evaluateSignalForEntry(sig('F1', 100, { contract: { symbol: 'NIFTY26N0325000CE' } }));
+        assert.strictEqual(r.status, 'OPENED', r.reason);
+        fake.push(optFrame('NSE_FO|N0325000CE', 94, 94.0, 94.2, clock.now));       // stop hit at the real bid
+        await waitFor(() => srv.paperEngine.getCompletedTrades().length === 1, 3000, 'paper stop');
+        assert.strictEqual(srv.paperEngine.getCompletedTrades()[0].exitReason, 'STOP_LOSS_SL_TRIGGERED');
+        assert.strictEqual(srv.runner.resolveInstrumentKey('NIFTY26N0325000CE'), 'NSE_FO|N0325000CE');
+    } finally { await feed.stop(); await fake.close(); }
+});
+
 // =============================================================== UPSTOX CLIENT (fake fetch)
 function fakeFetch(responder) {
     const calls = [];

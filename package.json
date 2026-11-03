@@ -4,7 +4,9 @@
   "description": "HELL: NIFTY options paper/live trading with risk governor (Upstox)",
   "main": "index.js",
   "private": true,
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node index.js",
     "test": "node test.js"
@@ -12,6 +14,7 @@
   "dependencies": {
     "express": "^4.21.2",
     "pg": "^8.13.1",
+    "protobufjs": "^7.6.6",
     "ws": "^8.18.0"
   }
 }
