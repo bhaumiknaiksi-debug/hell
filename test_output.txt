@@ -1,0 +1,55 @@
+
+> hell-trading-system@5.0.0 test
+> node test.js
+
+PASS  Default stops (8/10/14) with ₹600 cap block a normal ATM entry (your trade-off decision is still open)
+PASS  Stop distances are config: tighter stops allow the same entry and change the plan version
+PASS  Invalid stop config (trigger >= floor) refuses to start
+PASS  Pre-send gate: rejects market/bad qty/bad symbol/BUY-SL; allows exit identified by instrument key
+PASS  Capital check uses the supplied funds (incl. charges) and fails closed if lookup fails
+PASS  Paper: stop, target and 30-min time stop exit via the quote/heartbeat path (15:15 EOD is a backstop: 14:45 cutoff + 30-min hold always exits first)
+PASS  Paper kill exits at the real bid, never the entry price; with no quote it refuses rather than invent a price
+PASS  Feed verification is earned: clean full day verifies; gap, late start, health failure or early stop do not
+PASS  Graduation gate counts only verified sessions on the current stop config
+PASS  Restart: daily loss tally, trade count and paper trades survive; mode comes back SHADOW
+PASS  Restart cannot reset the daily loss cap
+PASS  Clearing a kill keeps loss history; clearing a multi-day halt keeps history too
+PASS  Storage missing or failing blocks new entries (fail closed) and warns
+PASS  Days missed while the server was down are finalised on boot (multi-day breaker sees them)
+PASS  Live entry: fill read from order status, SL placed from actual fill price
+PASS  Live entry never fills: cancelled, no position, no SL
+PASS  Live entry fills DURING the cancel: position recorded and protected
+PASS  Live partial fill: remainder cancelled, SL covers exactly the filled qty
+PASS  Live SL rejected by broker: position exited immediately and alerted
+PASS  Kill with live position: SL converted in place to a chasing exit — never a moment without a resting sell
+PASS  Kill when broker refuses SL->LIMIT modify: cancel is CONFIRMED before a separate exit is placed
+PASS  Broker-side SL fill is detected on the heartbeat and booked
+PASS  SL triggered but unfilled (gap below limit): chaser exits after 2s
+PASS  Live target and 30-min time stop exit on the heartbeat
+PASS  401 mid-session: LIVE disarmed, alert sent, resting SL left alone; /login gives the SAME manager a working token
+PASS  Live entry blocked without an Upstox instrument key
+PASS  Kill during an in-flight entry ends flat
+PASS  Arm-live gate: IP, login, reconcile, graduation and Telegram confirm are each enforced
+PASS  Arm-live succeeds only when everything passes (graduated paper history + /confirm-live)
+PASS  Restart with an open live position: boots SHADOW, adopts position and its resting SL after login, no duplicate SL
+PASS  Restart finds broker position with no SL: places one
+PASS  Telegram: unknown sender ignored; HTTP webhook needs secret; admin brute force locks out
+PASS  Upstox OAuth callback: state is required and single-use
+PASS  Stage 5: locked config (6/7.5/9, cap 700) lets a normal ATM entry through
+PASS  Stage 5: chaser not filled in time escalates until flat (no MARKET order), books the real loss, and the cap halts the day
+PASS  Stage 5: chaser partly filled -> the remaining quantity is escalated and closed; P&L uses the average of both fills
+PASS  Stage 5: exit part-filled then cancelled by the exchange -> a new exit closes the rest; nothing is double-sold
+PASS  Stage 5: instrument master unavailable -> download fails loudly, no order is placed, alert raised
+PASS  Stage 5: unknown contract -> blocked, no order reaches the broker
+PASS  Stage 5: overlapping heartbeat -> the second tick does not run alongside the first
+PASS  Stage 5: shutdown with an open position -> state saved, stop left resting, nothing cancelled
+PASS  Stage 5: runner - KV save/load round-trip, option-quote forwarding, instrument-key resolution, data gaps
+PASS  Stage 5: daily instrument map - weekly and monthly NIFTY symbols resolve to Upstox keys; wrong lot size refuses
+PASS  Stage 5: startup refuses a bad config with a clear message
+PASS  Upstox client: place order = POST api-hft v3 with Bearer + X-Algo-Name and correct body
+PASS  Upstox client: refuses MARKET orders and missing algo name before any HTTP call
+PASS  Upstox client: 401 fires the auth hook; error bodies surface the Upstox code
+PASS  Upstox client: order status/fill normalisation, positions and funds parsing
+PASS  Upstox token exchange is form-encoded with authorization_code grant
+
+49/49 passed
